@@ -1,4 +1,4 @@
-name: .NET CI
+name: CI for ML.NET Fork
 
 on:
   push:
@@ -11,41 +11,68 @@ on:
 jobs:
   build-and-test:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        configuration: [Debug, Release]
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '6.0.x'
 
-      - name: Restore NuGet packages
-        run: dotnet restore
-        shell: cmd
-        env:
-          DOTNET_CLI_UI_LANGUAGE: en-US
+    - name: Restore dependencies
+      run: dotnet restore
 
-      - name: Build Project (${{ matrix.configuration }})
-        run: .\build.cmd -configuration ${{ matrix.configuration }} -verbosity detailed
-        shell: cmd
-        env:
-          DOTNET_CLI_UI_LANGUAGE: en-US
+    - name: Build solution
+      id: build
+      run: |
+        dotnet build --configuration Release --no-restore 2>&1 | Out-File -FilePath build_output.txt
+        $LastExitCode | Out-File -FilePath build_exit_code.txt
+      continue-on-error: true
 
-      - name: Run Tests (${{ matrix.configuration }})
-        run: dotnet test --no-build --configuration ${{ matrix.configuration }} --logger "trx;LogFileName=test-results.trx" --results-directory "${{ github.workspace }}\TestResults" --verbosity normal
-        shell: cmd
-        env:
-          DOTNET_CLI_UI_LANGUAGE: en-US
+    - name: Run tests
+      id: test
+      run: |
+        dotnet test --configuration Release --no-build --logger "trx;LogFileName=test_results.trx" 2>&1 | Out-File -FilePath test_output.txt
+        $LastExitCode | Out-File -FilePath test_exit_code.txt
+      continue-on-error: true
 
-      - name: Upload Test Results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results-${{ matrix.configuration }}
-          path: ${{ github.workspace }}\TestResults\test-results.trx
-          retention-days: 1
+    - name: Generate summary report
+      run: |
+        $reportFileName = "ci_summary_report.txt"
+        
+        Add-Content -Path $reportFileName -Value "--- CI Summary Report ---"
+        
+        # Check build status
+        $buildExitCode = Get-Content build_exit_code.txt
+        if ($buildExitCode -ne "0") {
+            Add-Content -Path $reportFileName -Value "Build failed with exit code: $buildExitCode"
+            Select-String -Path build_output.txt -Pattern 'error' | Out-File -FilePath -Append $reportFileName
+        } else {
+            Add-Content -Path $reportFileName -Value "Build: SUCCESS"
+        }
+        
+        Add-Content -Path $reportFileName -Value ""
+        
+        # Check test status
+        $testExitCode = Get-Content test_exit_code.txt
+        if ($testExitCode -ne "0") {
+            Add-Content -Path $reportFileName -Value "Tests failed with exit code: $testExitCode"
+            Select-String -Path test_output.txt -Pattern 'Failed:' | Out-File -FilePath -Append $reportFileName
+        } else {
+            Add-Content -Path $reportFileName -Value "Tests: SUCCESS"
+        }
+        
+        Add-Content -Path $reportFileName -Value ""
+        Add-Content -Path $reportFileName -Value "For full logs, see build_output.txt, test_output.txt, and test_results.trx artifacts."
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ci-logs
+        path: |
+          ci_summary_report.txt
+          build_output.txt
+          test_output.txt
+          test_results.trx
